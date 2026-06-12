@@ -162,6 +162,8 @@ paths:
         Retorna as opções de parcelamento (1 a 4 parcelas) para o valor solicitado.
         Valida se o valor cabe na margem disponível.
         Cada parcela = valor solicitado / número de parcelas.
+        Não consulta o Dataprev — a margem é calculada localmente
+        (35% do salário menos as parcelas de empréstimos ativos).
       requestBody:
         required: true
         content:
@@ -207,6 +209,14 @@ paths:
         5. Margem disponível suficiente
         6. Máximo de 3 empréstimos ativos simultâneos
         7. Processamento do pagamento via gateway
+
+        Resultado da chamada ao gateway (em todos os casos a resposta é 201):
+        - status "aprovado" -> empréstimo salvo como "aprovado"
+        - status "recusado" -> empréstimo salvo como "rejeitado" (motivoRejeicao preenchido)
+        - HTTP 503 ou timeout -> empréstimo salvo como "erro_processamento"
+
+        O status HTTP 502 é usado apenas quando o Dataprev está indisponível
+        (HTTP 503 ou timeout) — nesse caso nenhum empréstimo é salvo.
       requestBody:
         required: true
         content:
@@ -215,7 +225,7 @@ paths:
               $ref: '#/components/schemas/SolicitarEmprestimoRequest'
       responses:
         '201':
-          description: Empréstimo solicitado (aprovado ou rejeitado conforme regras)
+          description: Empréstimo solicitado (aprovado, rejeitado ou erro_processamento, conforme regras)
           content:
             application/json:
               schema:
@@ -245,7 +255,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Erro'
         '502':
-          description: Serviço externo indisponível (Dataprev ou Gateway)
+          description: Dataprev indisponível (HTTP 503 ou timeout) — falha do gateway NÃO retorna 502 (gera empréstimo com status erro_processamento e resposta 201)
           content:
             application/json:
               schema:
@@ -440,12 +450,12 @@ components:
         margemUtilizada:
           type: number
           format: double
-          example: 500.00
+          example: 250.00
           description: Soma das parcelas mensais de empréstimos ativos
         margemDisponivel:
           type: number
           format: double
-          example: 1250.00
+          example: 1500.00
           description: margemTotal - margemUtilizada
 
     SimularEmprestimoRequest:
@@ -530,8 +540,8 @@ components:
           enum: [aprovado, rejeitado, erro_processamento]
           description: |
             - aprovado: todas as validações passaram e pagamento processado
-            - rejeitado: alguma regra de negócio não atendida (score, margem, limite)
-            - erro_processamento: regras OK mas gateway falhou
+            - rejeitado: alguma regra de negócio não atendida (score, margem, limite) ou pagamento recusado pelo gateway
+            - erro_processamento: regras OK mas gateway falhou (HTTP 503 ou timeout)
         motivoRejeicao:
           type: string
           nullable: true
@@ -558,8 +568,9 @@ components:
           type: string
           format: date
           description: |
-            Primeira parcela: 1 mês após a data de solicitação.
-            Demais: 1 mês após o vencimento anterior.
+            A parcela N vence N meses após a data de solicitação.
+            Se o mês de vencimento não tiver o dia correspondente,
+            usa o último dia do mês (semântica do addMonths).
 
     ListaEmprestimos:
       type: object
