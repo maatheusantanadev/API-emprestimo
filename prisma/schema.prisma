@@ -1,0 +1,103 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum StatusEmprestimo {
+  aprovado
+  rejeitado
+  erro_processamento
+
+  @@map("status_emprestimo")
+}
+
+/// Registro global de CPF, CNPJ e e-mail: garante unicidade ENTRE empresas e funcionários.
+model IdentificadorUnico {
+  tipo  String @db.VarChar(5)
+  valor String @db.VarChar(255)
+
+  @@id([tipo, valor])
+  @@map("identificadores_unicos")
+}
+
+model Empresa {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  cnpj              String   @unique @db.Char(14)
+  razaoSocial       String   @map("razao_social") @db.VarChar(255)
+  nomeRepresentante String   @map("nome_representante") @db.VarChar(255)
+  cpfRepresentante  String   @unique @map("cpf_representante") @db.Char(11)
+  email             String   @unique @db.VarChar(255)
+  senhaHash         String   @map("senha_hash") @db.VarChar(255)
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  funcionarios Funcionario[]
+
+  @@map("empresas")
+}
+
+model Funcionario {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  empresaId    String   @map("empresa_id") @db.Uuid
+  nomeCompleto String   @map("nome_completo") @db.VarChar(255)
+  cpf          String   @unique @db.Char(11)
+  email        String   @unique @db.VarChar(255)
+  senhaHash    String   @map("senha_hash") @db.VarChar(255)
+  salario      Decimal  @db.Decimal(12, 2)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  empresa      Empresa                @relation(fields: [empresaId], references: [id], onDelete: Restrict)
+  autorizacoes AutorizacaoConsulta[]
+  emprestimos  Emprestimo[]
+
+  @@index([empresaId], map: "idx_funcionarios_empresa")
+  @@map("funcionarios")
+}
+
+model AutorizacaoConsulta {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  funcionarioId String   @map("funcionario_id") @db.Uuid
+  autorizadoEm  DateTime @map("autorizado_em") @db.Timestamptz(3)
+  expiraEm      DateTime @map("expira_em") @db.Timestamptz(3)
+
+  funcionario Funcionario @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
+
+  @@index([funcionarioId, expiraEm(sort: Desc)], map: "idx_autorizacoes_func_expira")
+  @@map("autorizacoes_consulta")
+}
+
+model Emprestimo {
+  id                 String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  funcionarioId      String           @map("funcionario_id") @db.Uuid
+  valorSolicitado    Decimal          @map("valor_solicitado") @db.Decimal(12, 2)
+  numeroParcelas     Int              @map("numero_parcelas") @db.SmallInt
+  valorParcela       Decimal          @map("valor_parcela") @db.Decimal(12, 2)
+  status             StatusEmprestimo
+  motivoRejeicao     String?          @map("motivo_rejeicao")
+  gatewayTransacaoId String?          @map("gateway_transacao_id") @db.VarChar(100)
+  createdAt          DateTime         @map("created_at") @db.Timestamptz(3)
+
+  funcionario Funcionario         @relation(fields: [funcionarioId], references: [id], onDelete: Restrict)
+  parcelas    ParcelaEmprestimo[]
+
+  @@index([funcionarioId, status], map: "idx_emprestimos_func_status")
+  @@index([status], map: "idx_emprestimos_status")
+  @@map("emprestimos")
+}
+
+model ParcelaEmprestimo {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  emprestimoId   String   @map("emprestimo_id") @db.Uuid
+  numero         Int      @db.SmallInt
+  valor          Decimal  @db.Decimal(12, 2)
+  dataVencimento DateTime @map("data_vencimento") @db.Date
+
+  emprestimo Emprestimo @relation(fields: [emprestimoId], references: [id], onDelete: Cascade)
+
+  @@unique([emprestimoId, numero])
+  @@map("parcelas_emprestimo")
+}
