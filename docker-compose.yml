@@ -34,22 +34,44 @@ services:
       retries: 5
 
   # ============================================================
-  # Sua API — Descomente e configure abaixo
+  # API — Crédito do Trabalhador
   # ============================================================
-  # api:
-  #   build: .
-  #   ports:
-  #     - "3000:3000"
-  #   environment:
-  #     DATABASE_URL: postgresql://credifit:credifit123@db:5432/credifit_credito
-  #     DATAPREV_BASE_URL: http://mocks:3001/dataprev
-  #     GATEWAY_BASE_URL: http://mocks:3001/gateway
-  #     PORT: 3000
-  #   depends_on:
-  #     db:
-  #       condition: service_healthy
-  #     mocks:
-  #       condition: service_healthy
+  api:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://credifit:credifit123@db:5432/credifit_credito
+      DATAPREV_BASE_URL: http://mocks:3001/dataprev
+      GATEWAY_BASE_URL: http://mocks:3001/gateway
+      PORT: 3000
+      TZ: UTC
+    depends_on:
+      db:
+        condition: service_healthy
+      mocks:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      start_period: 20s
+      retries: 10
+
+  # ============================================================
+  # Testes automatizados (unitários + feature) — sob demanda:
+  #   docker compose --profile test run --rm tests
+  # ============================================================
+  tests:
+    profiles: ["test"]
+    build:
+      context: .
+      target: test
+    environment:
+      TEST_DATABASE_URL: postgresql://credifit:credifit123@db:5432/credifit_test
+    depends_on:
+      db:
+        condition: service_healthy
 
 volumes:
   pgdata:
