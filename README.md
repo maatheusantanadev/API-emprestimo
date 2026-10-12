@@ -1,342 +1,322 @@
-# Desafio Técnico — Desenvolvedor Fullstack Jr | Credifit
+# API Crédito do Trabalhador — Credifit
 
-## Prazo
+API REST que orquestra o fluxo de **crédito consignado** integrado ao e-Consignado (Dataprev): cadastro de empresas e funcionários, autorização de consulta, margem consignável, simulação e solicitação de empréstimos com validação de score, margem, limite de ativos e pagamento via gateway.
 
-Esperamos receber sua solução até às **23h59 da data especificada no e-mail**. Se precisar de mais tempo, é só responder o e-mail sugerindo uma nova data. Caso não seja viável para nós, te avisamos e alinhamos uma alternativa juntos.
+Implementa integralmente o contrato [`api-contract.yaml`](./api-contract.yaml).
 
----
-
-## Sobre a Credifit
-
-A Credifit é uma fintech que oferece **crédito consignado** para trabalhadores de empresas parceiras. O funcionário solicita um empréstimo e paga as parcelas via desconto direto na folha de pagamento — sem boleto, sem atraso.
-
-Recentemente, o governo integrou o crédito consignado ao sistema **e-Consignado do Dataprev**, criando a modalidade chamada **Crédito do Trabalhador**. Com isso, antes de conceder um empréstimo, precisamos:
-
-- Verificar se a **empresa** está habilitada no Dataprev
-- O **funcionário** precisa autorizar a consulta dos seus dados
-- Consultar o **score de crédito** e a **margem disponível** via Dataprev
-- Processar o **pagamento** via um gateway externo
-
-Seu desafio é construir a API que orquestra esse fluxo.
+**Stack:** Node.js 20 · TypeScript · NestJS 11 · Prisma 6 · PostgreSQL 16 · Jest + Supertest · Docker
 
 ---
 
-## O que você vai construir
+## Sumário
 
-Uma **API REST em Node.js/TypeScript** que implementa o fluxo abaixo:
-
-```
-┌──────────────────────────────────────────────────────────┐
-│                                                          │
-│  1. Cadastrar empresa conveniada                         │
-│         │                                                │
-│         ▼                                                │
-│  2. Cadastrar funcionário (vinculado à empresa)          │
-│         │                                                │
-│         ▼                                                │
-│  3. Funcionário autoriza consulta ao Dataprev (24h)      │
-│         │                                                │
-│         ▼                                                │
-│  4. Consultar margem consignável                         │
-│         │                                                │
-│         ▼                                                │
-│  5. Simular empréstimo (1 a 4 parcelas)                  │
-│         │                                                │
-│         ▼                                                │
-│  6. Solicitar empréstimo                                 │
-│      ├─ Verifica score de crédito (Dataprev)             │
-│      ├─ Verifica margem disponível                       │
-│      ├─ Verifica limite de empréstimos ativos            │
-│      └─ Processa pagamento (Gateway)                     │
-│         │                                                │
-│         ▼                                                │
-│  7. Listar / consultar empréstimos                       │
-│                                                          │
-└──────────────────────────────────────────────────────────┘
-```
-
-Cada etapa desse fluxo corresponde a um **endpoint da API**. O contrato completo (URLs, payloads, status codes) está no arquivo `api-contract.yaml` que você recebe junto a este documento.
-
-> **Dica:** para visualizar o contrato de forma interativa, copie o conteúdo do `api-contract.yaml` e cole em https://editor.swagger.io/ — lá você consegue ver todos os endpoints, schemas e exemplos de forma visual.
-
-**Importante:** sua API será validada por um **script de testes automatizados** que bate nos endpoints e verifica rotas, status codes, nomes dos campos e regras de negócio. Por isso, siga o contrato à risca — rotas, nomes de campos nos payloads e status codes de resposta devem ser **exatamente** como definidos no `api-contract.yaml`.
+- [Como executar](#como-executar)
+- [Testes automatizados](#testes-automatizados)
+- [Desenvolvimento local (sem Docker)](#desenvolvimento-local-sem-docker)
+- [Endpoints](#endpoints)
+- [Arquitetura](#arquitetura)
+- [Modelagem do banco](#modelagem-do-banco)
+- [Regras de negócio](#regras-de-negócio)
+- [Tratamento de erros](#tratamento-de-erros)
+- [Integrações externas](#integrações-externas)
+- [Decisões e interpretações do contrato](#decisões-e-interpretações-do-contrato)
+- [Limitações conhecidas e próximos passos](#limitações-conhecidas-e-próximos-passos)
 
 ---
 
-## O que você precisa entregar
+## Como executar
 
-Um **único arquivo `.zip`** contendo:
-
-1. **Código-fonte da API** em TypeScript + Node.js (framework à sua escolha: NestJS, Express, Fastify, etc.)
-2. **Banco de dados PostgreSQL** com a modelagem que você definir
-3. **Testes automatizados** cobrindo as regras de negócio
-4. **Dockerfile** da sua aplicação
-5. **docker-compose.yml** funcional — ao rodar o comando abaixo, toda a stack deve subir:
+Pré-requisito: **Docker** com Docker Compose.
 
 ```bash
 docker compose up --build
 ```
 
-Após subir, sua API deve estar acessível em `http://localhost:3000`.
+Sobem três serviços:
 
-**Quando terminar:** envie a solução em um único arquivo `.zip` para **processo-seletivo@credifit.com.br**, respondendo o e-mail do desafio. Não inclua `node_modules` nem artefatos de build no arquivo.
+| Serviço | Porta | Descrição |
+| ------- | ----- | --------- |
+| `api`   | 3000  | Esta API. Aplica as migrations automaticamente ao iniciar |
+| `db`    | 5432  | PostgreSQL 16 |
+| `mocks` | 3001  | Simulador do Dataprev e do Gateway de Pagamento |
+
+A API fica disponível em **http://localhost:3000** (healthcheck em `GET /health`).
+
+### Exemplo do fluxo completo
+
+```bash
+# 1. Empresa
+EMPRESA=$(curl -s -X POST localhost:3000/empresas -H 'Content-Type: application/json' -d '{
+  "cnpj": "12345678000100", "razaoSocial": "Tech Solutions Ltda",
+  "nomeRepresentante": "João da Silva", "cpfRepresentante": "12345678900",
+  "email": "joao@techsolutions.com", "senha": "senhaSegura123"}' | grep -o '"id":"[^"]*"' | cut -d'"' -f4)
+
+# 2. Funcionário (CPF final 99 -> score 900 no mock)
+FUNC=$(curl -s -X POST localhost:3000/funcionarios -H 'Content-Type: application/json' -d "{
+  \"nomeCompleto\": \"Maria Oliveira\", \"cpf\": \"98765432199\", \"email\": \"maria@email.com\",
+  \"senha\": \"senhaSegura123\", \"salario\": 5000, \"empresaId\": \"$EMPRESA\"}" | grep -o '"id":"[^"]*"' | cut -d'"' -f4)
+
+# 3. Autorização de consulta (válida por 24h)
+curl -s -X POST localhost:3000/funcionarios/$FUNC/autorizacao-consulta
+
+# 4. Margem consignável
+curl -s localhost:3000/funcionarios/$FUNC/margem
+
+# 5. Simulação
+curl -s -X POST localhost:3000/emprestimos/simular -H 'Content-Type: application/json' \
+  -d "{\"funcionarioId\": \"$FUNC\", \"valorSolicitado\": 1000}"
+
+# 6. Solicitação
+curl -s -X POST localhost:3000/emprestimos -H 'Content-Type: application/json' \
+  -d "{\"funcionarioId\": \"$FUNC\", \"valorSolicitado\": 1000, \"numeroParcelas\": 4}"
+
+# 7. Consulta
+curl -s "localhost:3000/emprestimos?funcionarioId=$FUNC"
+```
+
+Para simular falhas externas, troque o cenário do mock (`healthy`, `dataprev-down`, `dataprev-slow`, `gateway-down`, `gateway-rejected`):
+
+```bash
+curl -X POST localhost:3001/admin/scenario -H 'Content-Type: application/json' -d '{"name": "gateway-down"}'
+```
 
 ---
 
-## O que você recebe (starter kit)
+## Testes automatizados
 
-Para que você possa focar na API, já entregamos a infraestrutura pronta:
-
-| Arquivo              | O que é               | Para que serve                                                                                  |
-| -------------------- | --------------------- | ----------------------------------------------------------------------------------------------- |
-| `api-contract.yaml`  | Especificação OpenAPI | Define todos os endpoints, request/response e status codes que sua API deve seguir              |
-| `docker-compose.yml` | Docker Compose        | Sobe o PostgreSQL e os mocks já configurados — você só adiciona o serviço da sua API            |
-| `mocks/`             | Servidor de mocks     | Simula o Dataprev e o Gateway de Pagamento para você desenvolver sem depender de serviços reais |
-
-### Como começar
+A suíte completa (unitários + feature) roda em container, sem precisar de Node na máquina:
 
 ```bash
-# 1. Suba o banco e os mocks
-docker compose up -d db mocks
-
-# 2. Verifique que os mocks estão rodando
-curl http://localhost:3001/health
-# Deve retornar: {"status":"ok","scenario":"healthy"}
-
-# 3. Desenvolva sua API na porta 3000
-
-# 4. Quando estiver pronto, descomente o bloco "api" no docker-compose.yml,
-#    crie seu Dockerfile, e teste:
-docker compose up --build
+docker compose --profile test run --rm --build tests
 ```
 
-### Simulando falhas (cenários do mock)
+Com Node 20+ instalado localmente:
 
-O servidor de mocks pode simular falhas dos serviços externos — use isso para testar o tratamento de erros da sua API (o script de avaliação também usa esses cenários):
+| Comando | O que roda | Requer banco? |
+| ------- | ---------- | ------------- |
+| `npm test` | Testes unitários | Não |
+| `npm run test:e2e` | Testes de feature (HTTP → Postgres) | Sim |
+| `npm run test:all` | Ambos | Sim |
+| `npm run test:cov` | Unitários com cobertura | Não |
+
+**Testes unitários** (`test/unit`) — regras de negócio isoladas e services com repositórios em memória:
+
+- cálculo de margem, tabela de score por faixa salarial (com os valores de borda), parcelamento e datas de vencimento (incluindo os exemplos do enunciado, ano bissexto e virada de ano);
+- orquestração da solicitação: os três status possíveis, a ordem das validações, nada salvo quando o Dataprev falha, e concorrência (5 solicitações simultâneas → apenas 3 aprovadas);
+- expiração e renovação da autorização de 24h;
+- unicidade de CPF/CNPJ/e-mail entre empresas e funcionários;
+- filtro global de exceções e clientes HTTP (timeout testado contra um servidor HTTP real).
+
+**Testes de feature** (`test/e2e`) — sobem a aplicação real (módulos, validação, filtro de erros, Prisma e PostgreSQL) num banco isolado (`credifit_test`, criado e migrado automaticamente). Apenas Dataprev, Gateway e relógio são substituídos por fakes controláveis. Verificam status codes, o **conjunto exato de campos** de cada schema do contrato e as regras de negócio ponta a ponta.
+
+---
+
+## Desenvolvimento local (sem Docker)
 
 ```bash
-# Ver o cenário atual
-curl http://localhost:3001/admin/scenario
-
-# Alterar o cenário
-curl -X POST http://localhost:3001/admin/scenario \
-  -H "Content-Type: application/json" \
-  -d '{"name": "gateway-down"}'
+docker compose up -d db mocks        # banco e mocks
+npm ci
+cp .env.example .env
+set -a; source .env; set +a          # exporta as variáveis para o processo
+npx prisma migrate deploy
+npm run start:dev
 ```
-
-| Cenário            | Efeito                                                          |
-| ------------------ | --------------------------------------------------------------- |
-| `healthy`          | Tudo funcionando (cenário padrão)                               |
-| `dataprev-down`    | Dataprev responde HTTP 503                                      |
-| `dataprev-slow`    | Dataprev demora 5 segundos para responder (testa o seu timeout) |
-| `gateway-down`     | Gateway responde HTTP 503                                       |
-| `gateway-rejected` | Gateway responde HTTP 200 com `{ "status": "recusado" }`        |
-
-Além dos cenários, o mock tem respostas **determinísticas** para facilitar seus testes:
-
-- **Empresa:** CNPJs terminados em `0000` **não** estão habilitados no e-Consignado; todos os outros estão
-- **Score:** CPFs terminados em `00` → score 300; terminados em `50` → score 500; terminados em `99` → score 900; demais → score 650
 
 ### Variáveis de ambiente
 
-Sua API deve ler a configuração destas variáveis de ambiente. Os valores mudam dependendo de onde você está rodando:
+| Variável | Obrigatória | Descrição |
+| -------- | ----------- | --------- |
+| `DATABASE_URL` | sim | Conexão com o PostgreSQL |
+| `DATAPREV_BASE_URL` | sim | URL base do Dataprev (ex.: `http://mocks:3001/dataprev`) |
+| `GATEWAY_BASE_URL` | sim | URL base do Gateway (ex.: `http://mocks:3001/gateway`) |
+| `PORT` | não (3000) | Porta HTTP |
+| `EXTERNAL_TIMEOUT_MS` | não (3000) | Timeout das chamadas ao Dataprev e ao Gateway |
+| `TEST_DATABASE_URL` | não | Banco usado pelos testes de feature (padrão: `credifit_test` em `localhost`) |
 
-**Durante o desenvolvimento (API rodando fora do Docker, direto na máquina):**
-
-| Variável            | Valor                                                               |
-| ------------------- | ------------------------------------------------------------------- |
-| `DATABASE_URL`      | `postgresql://credifit:credifit123@localhost:5432/credifit_credito` |
-| `DATAPREV_BASE_URL` | `http://localhost:3001/dataprev`                                    |
-| `GATEWAY_BASE_URL`  | `http://localhost:3001/gateway`                                     |
-| `PORT`              | `3000`                                                              |
-
-**Na entrega final (tudo dentro do Docker Compose):**
-
-| Variável            | Valor                                                        |
-| ------------------- | ------------------------------------------------------------ |
-| `DATABASE_URL`      | `postgresql://credifit:credifit123@db:5432/credifit_credito` |
-| `DATAPREV_BASE_URL` | `http://mocks:3001/dataprev`                                 |
-| `GATEWAY_BASE_URL`  | `http://mocks:3001/gateway`                                  |
-| `PORT`              | `3000`                                                       |
-
-> Dentro do Docker Compose, os serviços se comunicam pelo **nome do serviço** (`db`, `mocks`), não por `localhost`. Os valores para Docker já estão pré-configurados no bloco comentado do `docker-compose.yml`.
+As variáveis são validadas na inicialização: se faltar alguma obrigatória, a aplicação não sobe.
 
 ---
 
-## Endpoints da API
+## Endpoints
 
-Abaixo um resumo dos endpoints. **O contrato completo está no `api-contract.yaml`** — consulte-o para ver os payloads exatos, campos obrigatórios e status codes esperados.
+| Método | Rota | Sucesso | Erros |
+| ------ | ---- | ------- | ----- |
+| POST | `/empresas` | 201 | 400, 409 |
+| POST | `/funcionarios` | 201 | 400, 404, 409 |
+| POST | `/funcionarios/:funcionarioId/autorizacao-consulta` | 200 | 404 |
+| GET | `/funcionarios/:funcionarioId/margem` | 200 | 403, 404, 422, 502 |
+| POST | `/emprestimos/simular` | 200 | 400, 403, 404 |
+| POST | `/emprestimos` | 201 | 400, 403, 404, 422, 502 |
+| GET | `/emprestimos?funcionarioId=&status=` | 200 | 400 (filtro inválido) |
+| GET | `/emprestimos/:emprestimoId` | 200 | 404 |
 
-| Método | Rota                                     | O que faz                                         |
-| ------ | ---------------------------------------- | ------------------------------------------------- |
-| POST   | `/empresas`                              | Cadastra uma empresa conveniada                   |
-| POST   | `/funcionarios`                          | Cadastra um funcionário vinculado a uma empresa   |
-| POST   | `/funcionarios/:id/autorizacao-consulta` | Funcionário autoriza consulta ao Dataprev         |
-| GET    | `/funcionarios/:id/margem`               | Retorna a margem consignável disponível           |
-| POST   | `/emprestimos/simular`                   | Simula opções de parcelamento (1 a 4x)            |
-| POST   | `/emprestimos`                           | Solicita um empréstimo (roda todas as validações) |
-| GET    | `/emprestimos`                           | Lista empréstimos (com filtros opcionais)         |
-| GET    | `/emprestimos/:id`                       | Detalha um empréstimo com suas parcelas           |
+Payloads e schemas: ver [`api-contract.yaml`](./api-contract.yaml) (pode ser visualizado em https://editor.swagger.io/).
+
+---
+
+## Arquitetura
+
+Camadas com responsabilidades separadas e dependências apontando para abstrações (DIP):
+
+```
+HTTP ─► Controller ─► Service ─► Repository (interface) ─► Prisma ─► PostgreSQL
+         │  DTO         │  regras de domínio puras
+         │  Presenter   └─► Client (interface) ─► Dataprev / Gateway (HTTP)
+         └─ ValidationPipe + GlobalExceptionFilter
+```
+
+| Camada | Responsabilidade |
+| ------ | ---------------- |
+| **DTOs** (`dto/`) | Validação estrita da entrada com class-validator. Nada inválido chega ao service |
+| **Controllers** | Recebem a requisição, delegam ao service e formatam a resposta. Sem regra de negócio |
+| **Presenters** (`presenters/`) | Montam a resposta exatamente no schema do contrato (nunca expõem senha ou dados internos) |
+| **Services** | Orquestram o caso de uso e lançam **erros de domínio**, sem conhecer HTTP |
+| **Domínio** (`domain/`, `margem.calculator.ts`) | Funções puras: margem, score, parcelamento, avaliação de crédito |
+| **Repositories** | Interface + implementação Prisma, injetadas por token. Os testes trocam por versões em memória |
+| **Integrations** | Adaptadores do Dataprev e do Gateway com timeout; isolam a API dos detalhes HTTP externos |
+
+```
+src/
+├── main.ts / app.module.ts / app.setup.ts
+├── config/               variáveis de ambiente validadas
+├── prisma/               PrismaService
+├── common/               erros de domínio, filtro global, pipes, relógio, mutex, utilitários
+├── integrations/         http client, Dataprev, Gateway de pagamento
+└── modules/
+    ├── empresas/  funcionarios/  identificadores/   cadastros e unicidade global
+    ├── autorizacoes/                                autorização de 24h
+    ├── e-consignado/                                regras que dependem do Dataprev
+    ├── margem/                                      cálculo e consulta de margem
+    └── emprestimos/                                 simulação, solicitação, consultas
+prisma/                   schema.prisma + migrations
+test/                     unit/, e2e/, support/ (fakes e repositórios em memória)
+```
+
+Cada módulo segue a mesma organização interna (as pastas presentes variam conforme o módulo):
+
+```
+modules/emprestimos/
+├── emprestimos.module.ts   composição do módulo (injeção de dependências)
+├── controllers/            camada HTTP
+├── services/               casos de uso / regras de negócio
+├── dto/                    entrada validada
+├── presenters/             saída no formato do contrato
+├── domain/                 regras puras
+├── entities/               modelos de domínio
+└── repositories/           interface + implementação Prisma
+```
+
+---
+
+## Modelagem do banco
+
+```
+empresas 1 ──── N funcionarios 1 ──┬── N autorizacoes_consulta
+                                   └── N emprestimos 1 ──── N parcelas_emprestimo
+
+identificadores_unicos (tipo, valor)   — registro global de CPF/CNPJ/e-mail
+```
+
+| Tabela | Destaques |
+| ------ | --------- |
+| `empresas` | CNPJ, CPF do representante e e-mail únicos; `senha_hash` (bcrypt) |
+| `funcionarios` | FK para empresa; `salario NUMERIC(12,2)` |
+| `autorizacoes_consulta` | Histórico: cada autorização/renovação é uma linha com `expira_em`; ativa = `expira_em > agora` |
+| `emprestimos` | Status em enum (`aprovado`, `rejeitado`, `erro_processamento`); `valor_parcela` persistido; `gateway_transacao_id` para rastreio |
+| `parcelas_emprestimo` | Uma linha por parcela com `data_vencimento DATE`; único por (`emprestimo_id`, `numero`) |
+| `identificadores_unicos` | PK (`tipo`, `valor`) — garante no banco a unicidade **entre** empresas e funcionários |
+
+Valores monetários são `NUMERIC(12,2)` (sem erro de ponto flutuante). Regras de integridade também estão no banco via `CHECK`: formato de CPF/CNPJ, salário > 0, parcelas entre 1 e 4 e `motivo_rejeicao` obrigatório quando o status é `rejeitado`.
+
+A margem **não é armazenada**: é sempre calculada a partir dos empréstimos aprovados, evitando dados inconsistentes.
 
 ---
 
 ## Regras de negócio
 
-### 1. Cadastros
+### Ordem das validações
 
-- **Empresa:** CNPJ (14 dígitos), razão social, nome do representante, CPF do representante (11 dígitos), e-mail, senha.
-- **Funcionário:** nome completo, CPF (11 dígitos), e-mail, senha, salário, ID da empresa.
-- **Unicidade:** CPF, CNPJ e e-mail devem ser únicos em todo o sistema — **inclusive entre entidades diferentes**: o CPF do representante de uma empresa não pode ser igual ao CPF de um funcionário, e o e-mail de uma empresa não pode ser igual ao e-mail de um funcionário (e vice-versa). Se já existirem, retorne erro 409.
-- Um funcionário só pode ser vinculado a uma empresa já cadastrada. Se o `empresaId` não existir, retorne erro 404.
+| Operação | Sequência |
+| -------- | --------- |
+| Cadastro de funcionário | dados (400) → empresa existe (404) → unicidade (409) |
+| Consultar margem | funcionário (404) → autorização ativa (403) → empresa habilitada no Dataprev (422 / 502) → cálculo |
+| Simular | dados (400) → funcionário (404) → autorização (403) → valor ≤ margem (400). **Não consulta o Dataprev** |
+| Solicitar | dados (400) → funcionário (404) → autorização (403) → empresa habilitada (422 / 502) → score no Dataprev (502) → score, margem, limite → gateway |
 
-### 2. Autorização de consulta ao Dataprev
+### Resultado da solicitação (sempre **201** quando chega à avaliação)
 
-Antes de qualquer operação de empréstimo, o funcionário precisa autorizar a consulta dos seus dados.
+| Situação | Status salvo | `motivoRejeicao` |
+| -------- | ------------ | ---------------- |
+| Score abaixo do mínimo da faixa salarial | `rejeitado` | Score insuficiente para a faixa salarial |
+| Valor acima da margem disponível | `rejeitado` | Valor solicitado excede a margem consignável disponível |
+| Já possui 3 empréstimos `aprovado` | `rejeitado` | Limite de 3 empréstimos ativos atingido |
+| Gateway responde `recusado` | `rejeitado` | Pagamento recusado pelo gateway |
+| Gateway responde HTTP 503 ou estoura o timeout | `erro_processamento` | `null` |
+| Gateway responde `aprovado` | `aprovado` | `null` |
 
-- Endpoint: `POST /funcionarios/:id/autorizacao-consulta`
-- A autorização expira em **24 horas**
-- Chamar o endpoint novamente **renova** a autorização: uma nova janela de 24 horas começa a contar a partir da nova chamada
-- Se o funcionário tentar consultar margem, simular ou solicitar empréstimo **sem autorização ativa**, retorne erro **403**
+Se o **Dataprev** estiver indisponível, a resposta é **502** e **nenhum empréstimo é salvo**.
 
-### 3. Verificação da empresa no Dataprev
+### Cálculos
 
-Ao **consultar margem** (`GET /funcionarios/:id/margem`) e ao **solicitar empréstimo** (`POST /emprestimos`), verifique se a empresa do funcionário está habilitada no e-Consignado.
+- **Margem:** total = 35% do salário; utilizada = soma de `valorParcela` dos empréstimos `aprovado`; disponível = total − utilizada. Calculada em centavos inteiros.
+- **Score mínimo:** até R$ 2.000 → 400; até R$ 4.000 → 500; até R$ 8.000 → 600; até R$ 12.000 → 700; acima → 800 (limites inclusivos).
+- **Parcelas:** valor ÷ número de parcelas, arredondado a 2 casas, igual em todas (sem ajuste na última, sem juros).
+- **Vencimentos:** parcela N vence N meses após a solicitação, com a semântica do `addMonths` do date-fns (31/01 + 1 mês = 28/02). O dia de referência é o dia em UTC do `createdAt` do empréstimo.
 
-- Consultar o mock: `GET {DATAPREV_BASE_URL}/empresa/{cnpj}/status`
-- Retorno: `{ "cnpj": "...", "habilitada": true/false }`
-- Se a empresa **não estiver habilitada**, retorne erro **422**
-- A **simulação** (`POST /emprestimos/simular`) **não** consulta o Dataprev — a margem é calculada localmente (regra 4)
+---
 
-### 4. Margem consignável
+## Tratamento de erros
 
-A margem define quanto o funcionário ainda pode comprometer do salário.
+Um **filtro global de exceções** converte todos os erros para o schema `Erro` do contrato:
 
+```json
+{ "message": "CNPJ já cadastrado", "details": { "campos": ["cnpj"] } }
 ```
-Margem total      = 35% do salário
-Margem utilizada  = soma das parcelas mensais dos empréstimos ativos (status "aprovado")
-Margem disponível = margem total − margem utilizada
-```
 
-**Exemplo:** funcionário ganha R$ 5.000.
+| Erro de domínio | HTTP |
+| --------------- | ---- |
+| `InvalidInputError` (validação, valor acima da margem na simulação) | 400 |
+| `ForbiddenOperationError` (autorização ausente/expirada) | 403 |
+| `NotFoundError` | 404 |
+| `ConflictError` (e violação de UNIQUE no banco, por concorrência) | 409 |
+| `BusinessRuleViolationError` (empresa não habilitada) | 422 |
+| `ExternalServiceUnavailableError` (Dataprev) | 502 |
+| Qualquer erro inesperado | 500 com `"Erro interno do servidor"` |
 
-- Margem total = R$ 1.750 (35%)
-- Tem 1 empréstimo ativo de R$ 500 em 2x → parcela de R$ 250/mês
-- Margem utilizada = R$ 250
-- Margem disponível = R$ 1.500
-
-**Regra:** o **valor solicitado** de um novo empréstimo não pode exceder a **margem disponível**. (Como a parcela é sempre uma fração do valor solicitado, isso garante automaticamente que a parcela mensal também cabe na margem.)
-
-Quando o valor excede a margem disponível:
-
-- Na **simulação** (`POST /emprestimos/simular`) → retorne erro **400**
-- Na **solicitação** (`POST /emprestimos`) → o empréstimo é salvo com status `rejeitado` (resposta **201**), com `motivoRejeicao` explicando
-
-### 5. Score de crédito
-
-Ao solicitar um empréstimo, o sistema consulta o score do funcionário no Dataprev.
-
-- Consultar o mock: `GET {DATAPREV_BASE_URL}/funcionario/{cpf}/score`
-- Retorno: `{ "cpf": "...", "score": 650 }`
-
-**Regra de aprovação — o score mínimo depende da faixa salarial:**
-
-| Faixa salarial                  | Score mínimo |
-| ------------------------------- | ------------ |
-| Até R$ 2.000,00                 | 400          |
-| De R$ 2.000,01 até R$ 4.000,00  | 500          |
-| De R$ 4.000,01 até R$ 8.000,00  | 600          |
-| De R$ 8.000,01 até R$ 12.000,00 | 700          |
-| Acima de R$ 12.000,00           | 800          |
-
-Se o score for insuficiente, o empréstimo é **rejeitado**.
-
-### 6. Limite de empréstimos ativos
-
-Cada funcionário pode ter no máximo **3 empréstimos com status `aprovado`** ao mesmo tempo. Se já tiver 3, novos empréstimos são **rejeitados**.
-
-### 7. Parcelamento
-
-- Opções: **1, 2, 3 ou 4 parcelas**
-- Valor da parcela = valor solicitado ÷ número de parcelas (arredondar para 2 casas decimais)
-- **Todas as parcelas têm o mesmo valor** (o resultado da divisão arredondado). Não ajuste a última parcela: para R$ 1.000,00 em 3x, as três parcelas valem R$ 333,33 — a diferença de centavos em relação ao valor solicitado é esperada e não precisa ser compensada
-- **Sem juros**
-
-### 8. Datas de vencimento das parcelas
-
-- A parcela **N** vence **N meses após** a data de solicitação (1ª parcela: 1 mês depois; 2ª: 2 meses depois; e assim por diante)
-- Se o mês de vencimento não tiver o dia correspondente, use o **último dia do mês** — mesma semântica do `addMonths` de bibliotecas como date-fns
-
-**Exemplo:** empréstimo de 4 parcelas solicitado em 05/05/2025:
-
-| Parcela | Vencimento |
-| ------- | ---------- |
-| 1ª      | 05/06/2025 |
-| 2ª      | 05/07/2025 |
-| 3ª      | 05/08/2025 |
-| 4ª      | 05/09/2025 |
-
-**Exemplo (dia de borda):** empréstimo de 3 parcelas solicitado em 31/01/2025: vencimentos em 28/02/2025, 31/03/2025 e 30/04/2025.
-
-### 9. Pagamento via Gateway
-
-Quando todas as validações passam (score, margem, limite), o sistema processa o pagamento:
-
-- Chamar o mock: `POST {GATEWAY_BASE_URL}/pagamento`
-- Body: `{ "valor": 1000.00, "funcionarioCpf": "12345678900" }`
-- Se o gateway retorna `{ "status": "aprovado" }` → empréstimo salvo com status `aprovado`
-- Se o gateway retorna `{ "status": "recusado" }` (HTTP 200) → empréstimo salvo com status `rejeitado` e `motivoRejeicao: "Pagamento recusado pelo gateway"`
-- Se o gateway **falhar** (HTTP 503 ou timeout) → empréstimo salvo com status `erro_processamento`
-
-**Importante:** em **todos** os casos acima a API responde **201** com o empréstimo salvo. Se o gateway estiver fora do ar, o empréstimo **não pode ser perdido** — salve-o com o status `erro_processamento` para que possa ser reprocessado depois. (O status HTTP **502** é reservado para indisponibilidade do **Dataprev** — veja a regra 11.)
-
-### 10. Status do empréstimo
-
-Todo empréstimo tem um destes status:
-
-| Status               | Significado                                                                                                                            |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `aprovado`           | Todas as validações passaram **e** pagamento processado com sucesso                                                                    |
-| `rejeitado`          | Alguma regra de negócio não foi atendida (score insuficiente, margem estourada, limite atingido) **ou** pagamento recusado pelo gateway |
-| `erro_processamento` | Todas as regras passaram, mas o gateway de pagamento falhou (HTTP 503 ou timeout)                                                       |
-
-Empréstimos com status `rejeitado` devem incluir o campo `motivoRejeicao` explicando a razão (ex: "Score insuficiente para a faixa salarial").
-
-### 11. Falhas de serviços externos
-
-- Aplique um **timeout de 3 segundos** nas chamadas ao Dataprev e ao Gateway (o cenário `dataprev-slow` do mock demora 5 segundos — seu timeout deve disparar)
-- **Dataprev indisponível** (HTTP 503 ou timeout): a operação não pode continuar — retorne erro **502** com mensagem clara. Nenhum empréstimo é salvo nesse caso
-- **Gateway indisponível** (HTTP 503 ou timeout): o empréstimo já passou por todas as validações — salve-o com status `erro_processamento` e responda **201** (regra 9)
+Erros de validação trazem em `details.campos` a lista de problemas por campo. Erros 500 **nunca expõem** stack trace, SQL ou detalhes de infraestrutura na resposta; eles ficam apenas no log do servidor.
 
 ---
 
-## O que será avaliado
+## Integrações externas
 
-| Critério                  | O que olhamos                                                                            |
-| ------------------------- | ---------------------------------------------------------------------------------------- |
-| **Funcionalidade**        | A API funciona conforme o contrato? Os endpoints retornam os payloads e status corretos? |
-| **Regras de negócio**     | Score, margem, limite, autorização — as validações estão corretas?                       |
-| **Modelagem do banco**    | As tabelas e relações fazem sentido para o domínio?                                      |
-| **Tratamento de erros**   | O que acontece quando o Dataprev está fora? E o gateway? A API retorna erros claros?     |
-| **Testes**                | Existem testes automatizados? Cobrem as regras principais?                               |
-| **Organização do código** | O código está limpo, organizado em camadas, e fácil de entender?                         |
+| Serviço | Chamada | Falha (HTTP ≠ 2xx, timeout de 3s, rede, resposta inválida) |
+| ------- | ------- | ---------------------------------------------------------- |
+| Dataprev | `GET /empresa/{cnpj}/status`, `GET /funcionario/{cpf}/score` | Interrompe a operação → **502** |
+| Gateway | `POST /pagamento` com `{ valor, funcionarioCpf }` | Empréstimo salvo como `erro_processamento` → **201** |
 
-## O que NÃO será avaliado
-
-- **Frontend** — não faça, o desafio é 100% backend
-- **Autenticação** — não precisa implementar JWT, OAuth ou qualquer auth
-- **Deploy em nuvem** — roda local com Docker e está ótimo
-- **Performance** — não se preocupe com cache, filas ou otimização prematura
+O timeout usa `AbortSignal.timeout` e cobre a requisição inteira, incluindo a leitura do corpo. O cliente do gateway nunca lança exceção para o service: devolve `aprovado`, `recusado` ou `falha`, garantindo que o empréstimo não seja perdido.
 
 ---
 
-## Checklist antes de enviar
+## Decisões e interpretações do contrato
 
-- [ ] `docker compose up --build` sobe toda a stack sem erros
-- [ ] API responde em `http://localhost:3000`
-- [ ] Endpoints seguem o contrato (`api-contract.yaml`)
-- [ ] Testes passam com `npm test` (ou equivalente)
-- [ ] Solução compactada em um único arquivo `.zip` (sem `node_modules` nem artefatos de build), enviada para processo-seletivo@credifit.com.br
+- **ID inválido na rota → 404.** Para `:funcionarioId` e `:emprestimoId` o contrato prevê apenas 404; um valor que não é UUID certamente não existe. No **body**, um UUID inválido é erro de validação (400).
+- **UUIDs de qualquer versão** são aceitos (ex.: `00000000-0000-0000-0000-000000000000` resulta em 404, não 400).
+- **Parcelas geradas para todo empréstimo**, inclusive `rejeitado` e `erro_processamento`, para que `parcelas.length` sempre corresponda a `numeroParcelas`.
+- **Filtros inválidos em `GET /emprestimos`** (`status` fora do enum, `funcionarioId` não-UUID) retornam 400. O contrato só documenta o 200 nessa rota.
+- **Formato estrito de documentos:** CPF e CNPJ apenas com dígitos (11 e 14). Valores com máscara retornam 400, já que o contrato especifica "sem formatação".
+- **Campos numéricos precisam ser `number`:** `"5000"` (string) retorna 400; valores monetários aceitam até 2 casas decimais.
+- **E-mail normalizado** (minúsculas, sem espaços), portanto a unicidade não diferencia maiúsculas.
+- **Campos extras no body são descartados** (não geram erro), evitando 400 por campos não previstos.
+- **Ordem das regras de crédito** segue a do contrato (score → margem → limite); o `motivoRejeicao` reflete a primeira regra violada. O score é sempre consultado, então Dataprev fora do ar resulta em 502 mesmo que outra regra fosse reprovar.
+- **`erro_processamento` não consome margem nem limite:** só empréstimos `aprovado` são considerados ativos.
+- **Autorizações mantêm histórico** em vez de sobrescrever a anterior.
 
 ---
 
-Boa sorte! Em caso de dúvidas, responda o e-mail do desafio.
+## Limitações conhecidas e próximos passos
+
+- **Concorrência por instância:** solicitações simultâneas do mesmo funcionário são serializadas por um mutex em memória, o que impede ultrapassar o limite de 3 ativos ou a margem com uma instância da API. Com várias réplicas, o equivalente seria um lock no banco (`pg_advisory_xact_lock` por funcionário).
+- **Reprocessamento** de empréstimos em `erro_processamento` está viabilizado pelo modelo (status persistido), mas não há endpoint ou job para isso, pois está fora do escopo.
+- **Autenticação**, conforme o enunciado, não foi implementada; as senhas são apenas armazenadas com hash bcrypt.
+- **Retry/circuit breaker** nas chamadas externas não foram adicionados para manter o comportamento exigido (falha imediata após o timeout de 3s).
